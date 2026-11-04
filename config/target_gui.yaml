@@ -1,0 +1,10 @@
+target_gui:
+  ros__parameters:
+    # 射出電流設定値を変更する shoot_belt のサービス名。
+    service_name: /shoot_belt/manual_current
+
+    # 現在の射出電流設定値 [A] を受信するトピック名。実測電流ではない。
+    state_topic: /shoot_belt/manual_current_state
+
+    # true: 全画面で起動、false: ウィンドウ表示で起動。
+    full_screen: false
