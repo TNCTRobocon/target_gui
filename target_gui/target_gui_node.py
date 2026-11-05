@@ -1,13 +1,14 @@
 import math
 import queue
 import threading
+import time
 import tkinter as tk
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy
-from std_msgs.msg import Float32
+from std_msgs.msg import Float32, UInt8
 from shoot_belt.srv import ManualCurrent
 
 
@@ -20,16 +21,26 @@ class TargetGui(Node):
         self.declare_parameter('service_name', '/shoot_belt/manual_current')
         self.declare_parameter(
             'state_topic', '/shoot_belt/manual_current_state')
+        self.declare_parameter(
+            'operation_state_topic', '/shoot_belt/operation_state')
+        self.declare_parameter('operation_state_timeout_sec', 1.0)
         self.declare_parameter('full_screen', True)
 
         self.service_name = str(self.get_parameter('service_name').value)
         self.state_topic = str(self.get_parameter('state_topic').value)
+        self.operation_state_topic = str(
+            self.get_parameter('operation_state_topic').value)
+        self.operation_state_timeout_sec = float(
+            self.get_parameter('operation_state_timeout_sec').value)
         self.full_screen = bool(self.get_parameter('full_screen').value)
+
+        if not math.isfinite(self.operation_state_timeout_sec) or \
+                self.operation_state_timeout_sec <= 0.0:
+            raise ValueError('operation_state_timeout_sec must be finite and positive')
 
         self.event_queue = queue.Queue()
         self.request_in_flight = False
-        self._status_kind = 'connection'
-        self._service_was_ready = False
+        self.last_operation_state_time = None
 
         self.client = self.create_client(ManualCurrent, self.service_name)
         state_qos = QoSProfile(
@@ -38,6 +49,8 @@ class TargetGui(Node):
         )
         self.state_sub = self.create_subscription(
             Float32, self.state_topic, self._on_current_state, state_qos)
+        self.operation_state_sub = self.create_subscription(
+            UInt8, self.operation_state_topic, self._on_operation_state, state_qos)
 
         self.root = tk.Tk()
         self.root.title('Target GUI - 射出電流設定')
@@ -115,30 +128,34 @@ class TargetGui(Node):
         self.down_button.grid(
             row=1, column=0, sticky='nsew', pady=(0, 0))
 
-        # Fixed footer for the current command display and operation status.
+        # Bottom panel: current setpoint on the left, operation state on the right.
         self.footer = tk.Frame(self.root, bg='#303134')
         self.footer.grid(row=1, column=0, sticky='nsew', padx=10, pady=(5, 10))
-        self.current_var = tk.StringVar(
-            value='射出電流設定値： -- A')
+        self.footer.grid_rowconfigure(0, weight=1)
+        self.footer.grid_columnconfigure(0, weight=1, uniform='footer')
+        self.footer.grid_columnconfigure(1, weight=1, uniform='footer')
+
+        self.current_var = tk.StringVar(value='--.-- A')
         self.current_label = tk.Label(
             self.footer,
             textvariable=self.current_var,
-            font=('Sans', 23, 'bold'),
+            font=('Sans', 52, 'bold'),
             fg='white', bg='#303134',
             anchor='center',
         )
-        self.current_label.pack(fill=tk.X, padx=12, pady=(10, 3))
+        self.current_label.grid(
+            row=0, column=0, sticky='nsew', padx=(12, 6), pady=8)
 
-        self.status_var = tk.StringVar(
-            value='状態：制御ノードの接続を待っています')
-        self.status_label = tk.Label(
+        self.operation_state_var = tk.StringVar(value='ERROR')
+        self.operation_state_label = tk.Label(
             self.footer,
-            textvariable=self.status_var,
-            font=('Sans', 14),
-            fg='#dddddd', bg='#303134',
+            textvariable=self.operation_state_var,
+            font=('Sans', 56, 'bold'),
+            fg='#e45b5b', bg='#303134',
             anchor='center',
         )
-        self.status_label.pack(fill=tk.X, padx=12, pady=(3, 10))
+        self.operation_state_label.grid(
+            row=0, column=1, sticky='nsew', padx=(6, 12), pady=8)
 
         self.root.grid_rowconfigure(0, weight=8)
         self.root.grid_rowconfigure(1, weight=2)
@@ -151,26 +168,40 @@ class TargetGui(Node):
         self.root.after(50, self._process_ros_events)
         self.get_logger().info(
             f'Target GUI ready: service={self.service_name}, '
-            f'state_topic={self.state_topic}')
+            f'state_topic={self.state_topic}, '
+            f'operation_state_topic={self.operation_state_topic}')
 
     def _on_current_state(self, message):
         if math.isfinite(message.data):
             self.event_queue.put(('current_state', float(message.data)))
 
+    def _on_operation_state(self, message):
+        if message.data in (0, 1, 2):
+            self.event_queue.put((
+                'operation_state', (int(message.data), time.monotonic())))
+
+    def _set_operation_state(self, state):
+        state_display = {
+            0: ('ERROR', '#e45b5b'),
+            1: ('WAIT', '#e0b45b'),
+            2: ('OK', '#55b878'),
+        }
+        text, color = state_display.get(state, state_display[0])
+        self.operation_state_var.set(text)
+        self.operation_state_label.configure(fg=color)
+
     def _send_operation(self, operation):
         if self.request_in_flight:
             return
         if not self.client.service_is_ready():
-            self._set_status(
-                f'制御サービスに接続できません: {self.service_name}',
-                'connection')
+            self.get_logger().warning(
+                f'Control service is unavailable: {self.service_name}')
             return
 
         request = ManualCurrent.Request()
         request.operation = int(operation)
         self.request_in_flight = True
         self._set_buttons_enabled(False)
-        self._set_status('設定要求を送信中...', 'working')
 
         future = self.client.call_async(request)
         future.add_done_callback(self._on_service_done)
@@ -186,45 +217,36 @@ class TargetGui(Node):
             while True:
                 event, payload = self.event_queue.get_nowait()
                 if event == 'current_state':
-                    self.current_var.set(
-                        f'射出電流設定値： {payload:.2f} A')
+                    self.current_var.set(f'{payload:.2f} A')
+                elif event == 'operation_state':
+                    state, received_at = payload
+                    self.last_operation_state_time = received_at
+                    self._set_operation_state(state)
                 elif event == 'service_result':
                     self.request_in_flight = False
                     self._set_buttons_enabled(True)
                     if math.isfinite(payload.current_a):
-                        self.current_var.set(
-                            f'射出電流設定値： {payload.current_a:.2f} A')
+                        self.current_var.set(f'{payload.current_a:.2f} A')
                     if payload.success:
-                        self._set_status(
-                            f'設定更新：{payload.current_a:.2f} A',
-                            'result')
+                        self.get_logger().info(
+                            f'Current setpoint updated: {payload.current_a:.2f} A')
                     else:
-                        self._set_status(
-                            f'設定拒否：{payload.message}',
-                            'result')
+                        self.get_logger().warning(
+                            f'Current setting rejected: {payload.message}')
                 elif event == 'service_error':
                     self.request_in_flight = False
                     self._set_buttons_enabled(True)
-                    self._set_status(f'サービス呼び出し失敗：{payload}', 'result')
+                    self.get_logger().error(
+                        f'Manual-current service call failed: {payload}')
         except queue.Empty:
             pass
 
-        service_ready = self.client.service_is_ready()
-        if service_ready and not self._service_was_ready:
-            if self._status_kind == 'connection':
-                self._set_status('待機中', 'idle')
-        elif not service_ready and self._service_was_ready:
-            if not self.request_in_flight and self._status_kind == 'idle':
-                self._set_status(
-                    f'制御サービスとの接続が切れました: {self.service_name}',
-                    'connection')
-        self._service_was_ready = service_ready
+        if self.last_operation_state_time is None or \
+                time.monotonic() - self.last_operation_state_time > \
+                self.operation_state_timeout_sec:
+            self._set_operation_state(0)
 
         self.root.after(50, self._process_ros_events)
-
-    def _set_status(self, text, kind):
-        self.status_var.set(f'状態：{text}')
-        self._status_kind = kind
 
     def _set_buttons_enabled(self, enabled):
         state = tk.NORMAL if enabled else tk.DISABLED

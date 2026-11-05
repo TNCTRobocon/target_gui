@@ -8,7 +8,10 @@
 - 左側の「移動」ボタン：「低」と同じ設定更新処理で `manual_move_current_a` の値を設定（値は `shoot_belt/config/shoot_belt.yaml` で設定）
 - 右上の「UP」ボタン：現在の指令値を YAML の増減幅だけ増加
 - 右下の「DOWN」ボタン：現在の指令値を YAML の増減幅だけ減少
-- 画面下部：射出電流設定値と設定状態
+- 画面下部左側：現在の射出電流設定値を大きく表示
+- 画面下部右側：射出Actionの受付状態を `ERROR` / `WAIT` / `OK` で大きく表示
+
+状態表示は `shoot_belt` の `/shoot_belt/operation_state` (`std_msgs/msg/UInt8`) を使用します。状態通知が `operation_state_timeout_sec` 秒以上途絶えた場合は、古い状態を残さず `ERROR` を表示します。
 
 表示値は実測電流ではなく、次回の射出に使う設定値です。ボタン操作そのものでは、モーターの制御モード変更や電流・CAN指令送信を行いません。
 
