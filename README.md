@@ -5,6 +5,7 @@
 ## 画面レイアウト
 
 - 左側の「高」「中」「低」ボタン：それぞれ `manual_bucket_1_current_a`、`manual_bucket_2_current_a`、`manual_bucket_3_current_a` の値を設定（値は `shoot_belt/config/shoot_belt.yaml` で設定）
+- 左側の「移動」ボタン：「低」と同じ設定更新処理で `manual_move_current_a` の値を設定（値は `shoot_belt/config/shoot_belt.yaml` で設定）
 - 右上の「UP」ボタン：現在の指令値を YAML の増減幅だけ増加
 - 右下の「DOWN」ボタン：現在の指令値を YAML の増減幅だけ減少
 - 画面下部：射出電流設定値と設定状態

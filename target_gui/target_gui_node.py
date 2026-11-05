@@ -48,17 +48,17 @@ class TargetGui(Node):
         self.root.bind('<Escape>', lambda _event: self.close_window())
         self.root.bind('<F11>', lambda _event: self.toggle_full_screen())
 
-        # Three fixed-bucket choices stacked vertically on the left.
+        # Current-setting presets stacked vertically on the left.
         self.main_frame = tk.Frame(self.root, bg='#202124')
         self.main_frame.grid(row=0, column=0, sticky='nsew', padx=10, pady=(10, 5))
         self.main_frame.grid_rowconfigure(0, weight=1)
-        self.main_frame.grid_columnconfigure(0, weight=3, uniform='main')
-        self.main_frame.grid_columnconfigure(1, weight=2, uniform='main')
+        self.main_frame.grid_columnconfigure(0, weight=2, uniform='main')
+        self.main_frame.grid_columnconfigure(1, weight=1, uniform='main')
 
         self.fixed_frame = tk.Frame(self.main_frame, bg='#202124')
         self.fixed_frame.grid(
             row=0, column=0, sticky='nsew', padx=(0, 8), pady=0)
-        for row in range(3):
+        for row in range(4):
             self.fixed_frame.grid_rowconfigure(row, weight=1, uniform='fixed_bucket')
         self.fixed_frame.grid_columnconfigure(0, weight=1)
         self.fixed_buttons = []
@@ -66,6 +66,7 @@ class TargetGui(Node):
             ('高', ManualCurrent.Request.SET_FIXED_BUCKET_1),
             ('中', ManualCurrent.Request.SET_FIXED_BUCKET_2),
             ('低', ManualCurrent.Request.SET_FIXED_BUCKET_3),
+            ('移動', ManualCurrent.Request.SET_MOVE),
         )
         for row, (label, operation) in enumerate(fixed_bucket_options):
             button = tk.Button(
@@ -79,7 +80,7 @@ class TargetGui(Node):
             )
             button.grid(
                 row=row, column=0, sticky='nsew',
-                pady=(0, 5) if row < 2 else (0, 0))
+                pady=(0, 5) if row < 3 else (0, 0))
             self.fixed_buttons.append(button)
 
         self.right_frame = tk.Frame(self.main_frame, bg='#202124')
@@ -99,7 +100,7 @@ class TargetGui(Node):
             relief=tk.FLAT, bd=0, takefocus=False,
         )
         self.up_button.grid(
-            row=0, column=0, sticky='nsew', pady=(0, 8))
+            row=0, column=0, sticky='nsew', pady=(0, 5))
 
         self.down_button = tk.Button(
             self.right_frame,
@@ -112,7 +113,7 @@ class TargetGui(Node):
             relief=tk.FLAT, bd=0, takefocus=False,
         )
         self.down_button.grid(
-            row=1, column=0, sticky='nsew', pady=(8, 0))
+            row=1, column=0, sticky='nsew', pady=(0, 0))
 
         # Fixed footer for the current command display and operation status.
         self.footer = tk.Frame(self.root, bg='#303134')
