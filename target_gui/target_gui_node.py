@@ -61,16 +61,18 @@ class TargetGui(Node):
         self.root.bind('<Escape>', lambda _event: self.close_window())
         self.root.bind('<F11>', lambda _event: self.toggle_full_screen())
 
-        # Current-setting presets stacked vertically on the left.
+        # Upper control area: three columns with aligned bottom edges.
         self.main_frame = tk.Frame(self.root, bg='#202124')
-        self.main_frame.grid(row=0, column=0, sticky='nsew', padx=10, pady=(10, 5))
+        self.main_frame.grid(
+            row=0, column=0, sticky='nsew', padx=10, pady=(10, 5))
         self.main_frame.grid_rowconfigure(0, weight=1)
         self.main_frame.grid_columnconfigure(0, weight=2, uniform='main')
         self.main_frame.grid_columnconfigure(1, weight=1, uniform='main')
+        self.main_frame.grid_columnconfigure(2, weight=1, uniform='main')
 
         self.fixed_frame = tk.Frame(self.main_frame, bg='#202124')
         self.fixed_frame.grid(
-            row=0, column=0, sticky='nsew', padx=(0, 8), pady=0)
+            row=0, column=0, sticky='nsew', padx=(0, 6), pady=0)
         for row in range(4):
             self.fixed_frame.grid_rowconfigure(row, weight=1, uniform='fixed_bucket')
         self.fixed_frame.grid_columnconfigure(0, weight=1)
@@ -96,8 +98,42 @@ class TargetGui(Node):
                 pady=(0, 5) if row < 3 else (0, 0))
             self.fixed_buttons.append(button)
 
+        # Center column: brake and reset occupy the same total height
+        # as the four preset buttons.
+        self.middle_frame = tk.Frame(self.main_frame, bg='#202124')
+        self.middle_frame.grid(
+            row=0, column=1, sticky='nsew', padx=6, pady=0)
+        self.middle_frame.grid_rowconfigure(0, weight=1, uniform='middle')
+        self.middle_frame.grid_rowconfigure(1, weight=1, uniform='middle')
+        self.middle_frame.grid_columnconfigure(0, weight=1)
+
+        self.brake_button = tk.Button(
+            self.middle_frame,
+            text='ブレーキ',
+            command=lambda: self._log_gui_only_action('ブレーキ'),
+            font=('Sans', 26, 'bold'),
+            bg='#b3261e', fg='white',
+            activebackground='#d13b32', activeforeground='white',
+            relief=tk.FLAT, bd=0, takefocus=False,
+        )
+        self.brake_button.grid(
+            row=0, column=0, sticky='nsew', pady=(0, 5))
+
+        self.reset_button = tk.Button(
+            self.middle_frame,
+            text='リセット',
+            command=lambda: self._log_gui_only_action('リセット'),
+            font=('Sans', 26, 'bold'),
+            bg='#5f6368', fg='white',
+            activebackground='#777b80', activeforeground='white',
+            relief=tk.FLAT, bd=0, takefocus=False,
+        )
+        self.reset_button.grid(
+            row=1, column=0, sticky='nsew', pady=(0, 0))
+
         self.right_frame = tk.Frame(self.main_frame, bg='#202124')
-        self.right_frame.grid(row=0, column=1, sticky='nsew', padx=(8, 0))
+        self.right_frame.grid(
+            row=0, column=2, sticky='nsew', padx=(6, 0), pady=0)
         self.right_frame.grid_rowconfigure(0, weight=1, uniform='right')
         self.right_frame.grid_rowconfigure(1, weight=1, uniform='right')
         self.right_frame.grid_columnconfigure(0, weight=1)
@@ -128,9 +164,10 @@ class TargetGui(Node):
         self.down_button.grid(
             row=1, column=0, sticky='nsew', pady=(0, 0))
 
-        # Bottom panel: current setpoint on the left, operation state on the right.
+        # Full-width information area at the bottom of the GUI.
         self.footer = tk.Frame(self.root, bg='#303134')
-        self.footer.grid(row=1, column=0, sticky='nsew', padx=10, pady=(5, 10))
+        self.footer.grid(
+            row=1, column=0, sticky='nsew', padx=10, pady=(5, 10))
         self.footer.grid_rowconfigure(0, weight=1)
         self.footer.grid_columnconfigure(0, weight=1, uniform='footer')
         self.footer.grid_columnconfigure(1, weight=1, uniform='footer')
@@ -189,6 +226,11 @@ class TargetGui(Node):
         text, color = state_display.get(state, state_display[0])
         self.operation_state_var.set(text)
         self.operation_state_label.configure(fg=color)
+
+    def _log_gui_only_action(self, action_name):
+        """Record a GUI-only button press without publishing ROS commands."""
+        self.get_logger().info(
+            f'GUI-only button pressed: {action_name}; no ROS/Action/CAN command sent')
 
     def _send_operation(self, operation):
         if self.request_in_flight:
