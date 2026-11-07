@@ -1,6 +1,6 @@
 # target_gui
 
-タッチパネル向けの射出電流設定GUIです。ボタン操作ではモーターへの指令を送らず、次回の射出に使う設定値だけを更新します。
+タッチパネル向けの射出電流設定・操作GUIです。電流設定ボタンは次回の射出に使う設定値を更新し、「ブレーキ」「リセット」はそれぞれshoot_beltの停止処理・原点初期化処理へ命令を送ります。
 
 ## 画面レイアウト
 
@@ -10,13 +10,13 @@
 - 左側の「移動」ボタン：「低」と同じ設定更新処理で `manual_move_current_a` の値を設定（値は `shoot_belt/config/shoot_belt.yaml` で設定）
 - 右上の「UP」ボタン：現在の指令値を YAML の増減幅だけ増加
 - 右列下側の「DOWN」ボタン：現在の指令値を YAML の増減幅だけ減少
-- 中央列上側の「ブレーキ」ボタン：GUI表示・ログ確認用。クリックしてもROSトピック、Action、CAN指令を送信しない
-- 中央列下側の「リセット」ボタン：GUI表示・ログ確認用。クリックしてもROSトピック、Action、CAN指令を送信しない
+- 中央列上側の「ブレーキ」ボタン：`/shoot_belt/stop` (`std_msgs/msg/Empty`) をpublishし、shoot_beltの既存停止処理でブレーキモード3・電流指令0 Aを要求
+- 中央列下側の「リセット」ボタン：`/shoot_belt/reset_origin` (`std_srvs/srv/Trigger`) を呼び出し、ブレーキ・停止確認後に原点初期化。処理中はボタンを無効化し、完了結果をログに表示
 - 画面下部全幅：左半分に現在の射出電流設定値、右半分に射出Action受付状態 `ERROR` / `WAIT` / `OK` を大きく表示
 
 状態表示は `shoot_belt` の `/shoot_belt/operation_state` (`std_msgs/msg/UInt8`) を使用します。状態通知が `operation_state_timeout_sec` 秒以上途絶えた場合は、古い状態を残さず `ERROR` を表示します。
 
-表示値は実測電流ではなく、次回の射出に使う設定値です。「ブレーキ」「リセット」は現在GUIのみのボタンで、クリック時にはログを出すだけです。制御処理やROS通信は実装していません。ボタン操作そのものでは、モーターの制御モード変更や電流・CAN指令送信を行いません。
+表示値は実測電流ではなく、次回の射出に使う設定値です。電流設定ボタンは設定値だけを変更し、モーターへの指令を送信しません。一方、「ブレーキ」「リセット」はshoot_beltへ独立したROS命令を送信します。原点初期化中は射出Actionの受付状態がERRORとなり、初期化成功後に通常の受付判定へ戻ります。
 
 ## 起動
 
@@ -53,5 +53,7 @@ GUI の full_screen は config/target_gui.yaml で変更できます。Esc で�
 ## 通信
 
 - サービス /shoot_belt/manual_current (shoot_belt/srv/ManualCurrent)：射出電流設定値の変更のみ
+- サービス /shoot_belt/reset_origin (std_srvs/srv/Trigger)：原点初期化要求。応答は初期化の成功・失敗と理由
+- トピック /shoot_belt/stop (std_msgs/msg/Empty)：ブレーキ・停止要求
 - 状態トピック /shoot_belt/manual_current_state (std_msgs/msg/Float32, transient-local)：射出電流設定値
 - 設定値の変更時にモーターの制御モード・CAN指令には触れません。シーケンス実行中に変更しても、実行中の射出は開始時に固定した電流値を使い、変更後の設定は次回以降の射出に反映します。

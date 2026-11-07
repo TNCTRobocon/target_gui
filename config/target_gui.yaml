@@ -3,6 +3,12 @@ target_gui:
     # 射出電流設定値を変更する shoot_belt のサービス名。
     service_name: /shoot_belt/manual_current
 
+    # ブレーキボタンが既存の停止処理へ送るトピック名。
+    stop_topic: /shoot_belt/stop
+
+    # リセットボタンが呼び出す原点初期化サービス名 (std_srvs/srv/Trigger)。
+    reset_origin_service_name: /shoot_belt/reset_origin
+
     # 現在の射出電流設定値 [A] を受信するトピック名。実測電流ではない。
     state_topic: /shoot_belt/manual_current_state
 
