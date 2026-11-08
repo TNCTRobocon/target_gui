@@ -75,18 +75,17 @@ class TargetGui(Node):
         self.root.bind('<Escape>', lambda _event: self.close_window())
         self.root.bind('<F11>', lambda _event: self.toggle_full_screen())
 
-        # Upper control area: three columns with aligned bottom edges.
-        self.main_frame = tk.Frame(self.root, bg='#202124')
-        self.main_frame.grid(
-            row=0, column=0, sticky='nsew', padx=10, pady=(10, 5))
-        self.main_frame.grid_rowconfigure(0, weight=1)
-        self.main_frame.grid_columnconfigure(0, weight=15, uniform='main')
-        self.main_frame.grid_columnconfigure(1, weight=5, uniform='main')
-        self.main_frame.grid_columnconfigure(2, weight=10, uniform='main')
+        # Split the screen into left and right halves. The fixed buttons
+        # span the full height of the left half.
+        self.root.grid_rowconfigure(0, weight=8)
+        self.root.grid_rowconfigure(1, weight=2)
+        self.root.grid_columnconfigure(0, weight=1, uniform='screen')
+        self.root.grid_columnconfigure(1, weight=1, uniform='screen')
 
-        self.fixed_frame = tk.Frame(self.main_frame, bg='#202124')
+        self.fixed_frame = tk.Frame(self.root, bg='#202124')
         self.fixed_frame.grid(
-            row=0, column=0, sticky='nsew', padx=(0, 6), pady=0)
+            row=0, column=0, rowspan=2, sticky='nsew',
+            padx=(10, 5), pady=10)
         for row in range(4):
             self.fixed_frame.grid_rowconfigure(row, weight=1, uniform='fixed_bucket')
         self.fixed_frame.grid_columnconfigure(0, weight=1)
@@ -112,11 +111,19 @@ class TargetGui(Node):
                 pady=(0, 5) if row < 3 else (0, 0))
             self.fixed_buttons.append(button)
 
-        # Center column: brake and reset occupy the same total height
-        # as the four preset buttons.
+        # The right half keeps the existing brake/reset and up/down controls
+        # above the current and operation-state indicators.
+        self.main_frame = tk.Frame(self.root, bg='#202124')
+        self.main_frame.grid(
+            row=0, column=1, sticky='nsew', padx=(5, 10), pady=(10, 5))
+        self.main_frame.grid_rowconfigure(0, weight=1)
+        self.main_frame.grid_columnconfigure(0, weight=5, uniform='main')
+        self.main_frame.grid_columnconfigure(1, weight=10, uniform='main')
+
+        # Brake and reset occupy the same total height as before.
         self.middle_frame = tk.Frame(self.main_frame, bg='#202124')
         self.middle_frame.grid(
-            row=0, column=1, sticky='nsew', padx=6, pady=0)
+            row=0, column=0, sticky='nsew', padx=6, pady=0)
         self.middle_frame.grid_rowconfigure(0, weight=3, uniform='middle')
         self.middle_frame.grid_rowconfigure(1, weight=1, uniform='middle')
         self.middle_frame.grid_columnconfigure(0, weight=1)
@@ -147,7 +154,7 @@ class TargetGui(Node):
 
         self.right_frame = tk.Frame(self.main_frame, bg='#202124')
         self.right_frame.grid(
-            row=0, column=2, sticky='nsew', padx=(6, 0), pady=0)
+            row=0, column=1, sticky='nsew', padx=(6, 0), pady=0)
         self.right_frame.grid_rowconfigure(0, weight=1, uniform='right')
         self.right_frame.grid_rowconfigure(1, weight=1, uniform='right')
         self.right_frame.grid_columnconfigure(0, weight=1)
@@ -178,10 +185,11 @@ class TargetGui(Node):
         self.down_button.grid(
             row=1, column=0, sticky='nsew', pady=(0, 0))
 
-        # Full-width information area at the bottom of the GUI.
+        # Current and operation-state indicators share the bottom area
+        # of the right half.
         self.footer = tk.Frame(self.root, bg='#303134')
         self.footer.grid(
-            row=1, column=0, sticky='nsew', padx=10, pady=(5, 10))
+            row=1, column=1, sticky='nsew', padx=(5, 10), pady=(5, 10))
         self.footer.grid_rowconfigure(0, weight=1)
         self.footer.grid_columnconfigure(0, weight=1, uniform='footer')
         self.footer.grid_columnconfigure(1, weight=1, uniform='footer')
@@ -207,10 +215,6 @@ class TargetGui(Node):
         )
         self.operation_state_label.grid(
             row=0, column=1, sticky='nsew', padx=(6, 12), pady=8)
-
-        self.root.grid_rowconfigure(0, weight=8)
-        self.root.grid_rowconfigure(1, weight=2)
-        self.root.grid_columnconfigure(0, weight=1)
 
         self.root.update_idletasks()
         if self.full_screen:
