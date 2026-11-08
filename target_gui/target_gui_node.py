@@ -133,7 +133,18 @@ class TargetGui(Node):
         self.brake_button.grid(
             row=0, column=0, sticky='nsew', pady=(0, 5))
 
-        self.reset_container = tk.Frame(self.middle_frame, bg='#5f6368')
+        # Draw one persistent outer frame around both the RESET button and
+        # its lower result-display area. The highlight border reserves its own
+        # space, so the child widgets cannot cover the bottom edge.
+        self.reset_container = tk.Frame(
+            self.middle_frame,
+            bg='#5f6368',
+            bd=0,
+            relief=tk.FLAT,
+            highlightthickness=2,
+            highlightbackground='#9aa0a6',
+            highlightcolor='#9aa0a6',
+        )
         self.reset_container.grid(
             row=1, column=0, sticky='nsew', pady=(0, 0))
 
