@@ -155,10 +155,14 @@ class TargetGui(Node):
             font=('Sans', 26, 'bold'),
             bg='#5f6368', fg='white',
             activebackground='#777b80', activeforeground='white',
-            relief=tk.FLAT, bd=0, takefocus=False,
+            relief=tk.FLAT, bd=0, highlightthickness=0, takefocus=False,
         )
+        # Keep the button inside the outer frame's 2 px border. Disabling its
+        # own focus highlight prevents a second line along the upper edge.
         self.reset_button.place(
-            relx=0.0, rely=0.0, relwidth=1.0, relheight=1.0)
+            x=2, y=2,
+            relwidth=1.0, width=-4,
+            relheight=1.0, height=-4)
 
         # This label overlays only the lower edge of the button. The RESET
         # button text itself never changes or moves while showing the result.
@@ -171,7 +175,8 @@ class TargetGui(Node):
             takefocus=False,
         )
         self.reset_result_label.place(
-            relx=0.5, rely=1.0, anchor='s', relwidth=1.0, height=22)
+            relx=0.5, rely=1.0, y=-2, anchor='s',
+            relwidth=1.0, width=-4, height=22)
         self.reset_result_label.bind(
             '<Button-1>', lambda _event: self._send_reset_origin())
         self.reset_button.configure(state=tk.DISABLED)
