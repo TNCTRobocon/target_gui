@@ -51,6 +51,7 @@ class TargetGui(Node):
         self.event_queue = queue.Queue()
         self.request_in_flight = False
         self.reset_request_in_flight = False
+        self.reset_status_after_id = None
         self.last_operation_state_time = None
 
         self.client = self.create_client(ManualCurrent, self.service_name)
@@ -140,8 +141,12 @@ class TargetGui(Node):
         self.brake_button.grid(
             row=0, column=0, sticky='nsew', pady=(0, 5))
 
+        self.reset_button_frame = tk.Frame(
+            self.middle_frame, bg='#5f6368', bd=0, highlightthickness=0)
+        self.reset_button_frame.grid(
+            row=1, column=0, sticky='nsew', pady=(0, 0))
         self.reset_button = tk.Button(
-            self.middle_frame,
+            self.reset_button_frame,
             text='RESET',
             command=self._send_reset_origin,
             font=('Sans', 26, 'bold'),
@@ -149,8 +154,18 @@ class TargetGui(Node):
             activebackground='#777b80', activeforeground='white',
             relief=tk.FLAT, bd=0, takefocus=False,
         )
-        self.reset_button.grid(
-            row=1, column=0, sticky='nsew', pady=(0, 0))
+        self.reset_button.place(x=0, y=0, relwidth=1, relheight=1)
+        self.reset_status_label = tk.Label(
+            self.reset_button_frame,
+            text='',
+            font=('Sans', 11, 'bold'),
+            fg='#e0b45b', bg='#5f6368',
+            anchor='center',
+        )
+        self.reset_status_label.place(
+            relx=0.5, rely=1.0, anchor='s', relwidth=1.0, height=22)
+        self.reset_status_label.bind(
+            '<Button-1>', lambda _event: self._send_reset_origin())
 
         self.right_frame = tk.Frame(self.main_frame, bg='#202124')
         self.right_frame.grid(
@@ -258,14 +273,17 @@ class TargetGui(Node):
         """Request origin initialization without blocking the Tk event loop."""
         if self.reset_request_in_flight:
             return
+        self._cancel_reset_status_timer()
         if not self.reset_origin_client.service_is_ready():
-            self.get_logger().warning(
+            message = (
                 'Origin reset service is unavailable: '
                 f'{self.reset_origin_service_name}')
+            self._display_reset_result(False, message, service_error=True)
             return
 
         self.reset_request_in_flight = True
-        self.reset_button.configure(state=tk.DISABLED, text='初期化中...')
+        self.reset_button.configure(state=tk.DISABLED)
+        self.reset_status_label.configure(text='RESETTING...', fg='#e0b45b')
         future = self.reset_origin_client.call_async(
             Trigger.Request())
         future.add_done_callback(self._on_reset_origin_done)
@@ -278,6 +296,40 @@ class TargetGui(Node):
                 (bool(response.success), str(response.message))))
         except Exception as exc:
             self.event_queue.put(('reset_origin_error', str(exc)))
+
+    def _cancel_reset_status_timer(self):
+        if self.reset_status_after_id is not None:
+            try:
+                self.root.after_cancel(self.reset_status_after_id)
+            except tk.TclError:
+                pass
+            self.reset_status_after_id = None
+
+    def _clear_reset_status(self):
+        self.reset_status_after_id = None
+        if not self.reset_request_in_flight:
+            self.reset_status_label.configure(text='')
+
+    def _display_reset_result(self, success, message, service_error=False):
+        """Display reset status inside the RESET button without opening a dialog."""
+        self.reset_request_in_flight = False
+        self.reset_button.configure(state=tk.NORMAL)
+        if success:
+            status_text = 'COMPLETE'
+            status_color = '#55b878'
+            display_duration_ms = 2500
+            self.get_logger().info(f'Origin initialization succeeded: {message}')
+        else:
+            status_text = 'SERVICE ERROR' if service_error else 'FAILED'
+            status_color = '#e45b5b'
+            display_duration_ms = 5000
+            self.get_logger().error(f'Origin initialization failed: {message}')
+
+        self.reset_status_label.configure(
+            text=status_text, fg=status_color)
+        self._cancel_reset_status_timer()
+        self.reset_status_after_id = self.root.after(
+            display_duration_ms, self._clear_reset_status)
 
     def _send_operation(self, operation):
         if self.request_in_flight:
@@ -328,22 +380,12 @@ class TargetGui(Node):
                     self.get_logger().error(
                         f'Manual-current service call failed: {payload}')
                 elif event == 'reset_origin_result':
-                    self.reset_request_in_flight = False
-                    self.reset_button.configure(
-                        state=tk.NORMAL, text='RESET')
                     success, message = payload
-                    if success:
-                        self.get_logger().info(
-                            f'Origin initialization succeeded: {message}')
-                    else:
-                        self.get_logger().error(
-                            f'Origin initialization failed: {message}')
+                    self._display_reset_result(success, message)
                 elif event == 'reset_origin_error':
-                    self.reset_request_in_flight = False
-                    self.reset_button.configure(
-                        state=tk.NORMAL, text='RESET')
-                    self.get_logger().error(
-                        f'Origin reset service call failed: {payload}')
+                    self._display_reset_result(
+                        False, f'Origin reset service call failed: {payload}',
+                        service_error=True)
         except queue.Empty:
             pass
 
