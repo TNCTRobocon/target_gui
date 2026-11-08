@@ -15,8 +15,6 @@ target_gui:
     # 射出Actionの受付状態を受信するトピック名。
     operation_state_topic: /shoot_belt/operation_state
 
-    # 状態通知がこの秒数以上途絶えた場合はERRORを表示する。
-    operation_state_timeout_sec: 1.0
 
     # true: 全画面で起動、false: ウィンドウ表示で起動。
     full_screen: false
