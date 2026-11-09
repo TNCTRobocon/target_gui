@@ -44,6 +44,7 @@ class TargetGui(Node):
         self.request_in_flight = False
         self.reset_request_in_flight = False
         self.reset_status_after_id = None
+        self.operation_request_timeout_after_id = None
         self.operation_state = None
 
         self.client = self.create_client(ManualCurrent, self.service_name)
@@ -283,6 +284,7 @@ class TargetGui(Node):
         self.operation_state_label.configure(
             fg=color, font=('Sans', font_size, 'bold'))
         self._update_reset_button_state()
+        self._update_operation_buttons_state()
 
     def _update_reset_button_state(self):
         reset_allowed = self.operation_state in (0, 3, 5)
@@ -328,6 +330,7 @@ class TargetGui(Node):
         self.reset_status_after_id = self.root.after(
             display_duration_ms, self._clear_reset_status)
         self._update_reset_button_state()
+        self._update_operation_buttons_state()
 
     def _send_brake(self):
         """Request brake mode through shoot_belt's existing stop topic."""
@@ -354,6 +357,7 @@ class TargetGui(Node):
 
         self.reset_request_in_flight = True
         self.reset_button.configure(state=tk.DISABLED)
+        self._update_operation_buttons_state()
         self._set_reset_result('RESETTING...', '#e0b45b')
         future = self.reset_origin_client.call_async(Trigger.Request())
         future.add_done_callback(self._on_reset_origin_done)
@@ -368,7 +372,9 @@ class TargetGui(Node):
             self.event_queue.put(('reset_origin_error', str(exc)))
 
     def _send_operation(self, operation):
-        if self.request_in_flight:
+        # Do not allow setpoint changes while origin initialization is active.
+        if (self.request_in_flight or self.reset_request_in_flight or
+                self.operation_state == 4):
             return
         if not self.client.service_is_ready():
             self.get_logger().warning(
@@ -378,10 +384,14 @@ class TargetGui(Node):
         request = ManualCurrent.Request()
         request.operation = int(operation)
         self.request_in_flight = True
-        self._set_buttons_enabled(False)
+        self._update_operation_buttons_state()
 
         future = self.client.call_async(request)
         future.add_done_callback(self._on_service_done)
+        # Report a stalled service response, but do not release the lock:
+        # an INCREASE/DECREASE request may still have been applied server-side.
+        self.operation_request_timeout_after_id = self.root.after(
+            5000, self._on_operation_request_timeout)
 
     def _on_service_done(self, future):
         try:
@@ -399,7 +409,8 @@ class TargetGui(Node):
                     self._set_operation_state(payload)
                 elif event == 'service_result':
                     self.request_in_flight = False
-                    self._set_buttons_enabled(True)
+                    self._cancel_operation_request_timeout()
+                    self._update_operation_buttons_state()
                     if math.isfinite(payload.current_a):
                         self.current_var.set(f'{payload.current_a:.2f} A')
                     if payload.success:
@@ -410,7 +421,8 @@ class TargetGui(Node):
                             f'Current setting rejected: {payload.message}')
                 elif event == 'service_error':
                     self.request_in_flight = False
-                    self._set_buttons_enabled(True)
+                    self._cancel_operation_request_timeout()
+                    self._update_operation_buttons_state()
                     self.get_logger().error(
                         f'Manual-current service call failed: {payload}')
                 elif event == 'reset_origin_result':
@@ -426,10 +438,31 @@ class TargetGui(Node):
 
         self.root.after(50, self._process_ros_events)
 
-    def _set_buttons_enabled(self, enabled):
+    def _update_operation_buttons_state(self):
+        # RESETTING has priority over a manual-service completion event.
+        enabled = (
+            not self.request_in_flight and
+            not self.reset_request_in_flight and
+            self.operation_state != 4
+        )
         state = tk.NORMAL if enabled else tk.DISABLED
         for button in (*self.fixed_buttons, self.up_button, self.down_button):
             button.configure(state=state)
+
+    def _cancel_operation_request_timeout(self):
+        if self.operation_request_timeout_after_id is not None:
+            try:
+                self.root.after_cancel(self.operation_request_timeout_after_id)
+            except tk.TclError:
+                pass
+            self.operation_request_timeout_after_id = None
+
+    def _on_operation_request_timeout(self):
+        self.operation_request_timeout_after_id = None
+        if self.request_in_flight:
+            self.get_logger().error(
+                'Manual-current service response has not arrived after 5 seconds; '
+                'operation buttons remain disabled because the request outcome is unknown')
 
     def toggle_full_screen(self):
         current = bool(self.root.attributes('-fullscreen'))
