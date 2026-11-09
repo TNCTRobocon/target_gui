@@ -43,6 +43,8 @@ class TargetGui(Node):
         self.event_queue = queue.Queue()
         self.request_in_flight = False
         self.reset_request_in_flight = False
+        self.resetting_state_seen = False
+        self.reset_request_id = 0
         self.reset_status_after_id = None
         self.operation_request_timeout_after_id = None
         self.operation_state = None
@@ -283,6 +285,19 @@ class TargetGui(Node):
         self.operation_state_var.set(text)
         self.operation_state_label.configure(
             fg=color, font=('Sans', font_size, 'bold'))
+
+        # The operation-state topic is the fallback completion signal for
+        # RESET. The service response can be delayed or fail to reach the GUI.
+        if self.reset_request_in_flight:
+            if state == 4:
+                self.resetting_state_seen = True
+            elif state == 2:
+                self._display_reset_result(
+                    True, 'RESETTING -> READY state transition received')
+            elif self.resetting_state_seen and state == 5:
+                self._display_reset_result(
+                    False, 'RESETTING -> RESET_FAILED state transition received')
+
         self._update_reset_button_state()
         self._update_operation_buttons_state()
 
@@ -311,6 +326,7 @@ class TargetGui(Node):
     def _display_reset_result(self, success, message, service_error=False):
         """Display reset result temporarily without moving the RESET caption."""
         self.reset_request_in_flight = False
+        self.resetting_state_seen = False
         if success:
             status_text = 'COMPLETE'
             status_color = '#55b878'
@@ -355,21 +371,26 @@ class TargetGui(Node):
                 f'{self.reset_origin_service_name}')
             return
 
+        self.reset_request_id += 1
+        request_id = self.reset_request_id
+        self.resetting_state_seen = False
         self.reset_request_in_flight = True
         self.reset_button.configure(state=tk.DISABLED)
         self._update_operation_buttons_state()
         self._set_reset_result('RESETTING...', '#e0b45b')
         future = self.reset_origin_client.call_async(Trigger.Request())
-        future.add_done_callback(self._on_reset_origin_done)
+        future.add_done_callback(
+            lambda completed_future, request_id=request_id:
+                self._on_reset_origin_done(completed_future, request_id))
 
-    def _on_reset_origin_done(self, future):
+    def _on_reset_origin_done(self, future, request_id):
         try:
             response = future.result()
             self.event_queue.put((
                 'reset_origin_result',
-                (bool(response.success), str(response.message))))
+                (request_id, bool(response.success), str(response.message))))
         except Exception as exc:
-            self.event_queue.put(('reset_origin_error', str(exc)))
+            self.event_queue.put(('reset_origin_error', (request_id, str(exc))))
 
     def _send_operation(self, operation):
         # Do not allow setpoint changes while origin initialization is active.
@@ -426,13 +447,24 @@ class TargetGui(Node):
                     self.get_logger().error(
                         f'Manual-current service call failed: {payload}')
                 elif event == 'reset_origin_result':
-                    success, message = payload
-                    self._display_reset_result(success, message)
+                    request_id, success, message = payload
+                    if (request_id == self.reset_request_id and
+                            self.reset_request_in_flight):
+                        self._display_reset_result(success, message)
+                    else:
+                        self.get_logger().info(
+                            f'Ignoring late RESET service response for request {request_id}')
                 elif event == 'reset_origin_error':
-                    self._display_reset_result(
-                        False,
-                        f'Origin reset service call failed: {payload}',
-                        service_error=True)
+                    request_id, error = payload
+                    if (request_id == self.reset_request_id and
+                            self.reset_request_in_flight):
+                        self._display_reset_result(
+                            False,
+                            f'Origin reset service call failed: {error}',
+                            service_error=True)
+                    else:
+                        self.get_logger().info(
+                            f'Ignoring late RESET service error for request {request_id}')
         except queue.Empty:
             pass
 
