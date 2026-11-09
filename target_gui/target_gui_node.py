@@ -42,13 +42,8 @@ class TargetGui(Node):
 
         self.event_queue = queue.Queue()
         self.request_in_flight = False
-        self.operation_request_id = 0
-        self.pending_operation_request_id = None
         self.reset_request_in_flight = False
-        self.resetting_state_seen = False
-        self.reset_request_id = 0
         self.reset_status_after_id = None
-        self.operation_request_timeout_after_id = None
         self.operation_state = None
 
         self.client = self.create_client(ManualCurrent, self.service_name)
@@ -287,23 +282,7 @@ class TargetGui(Node):
         self.operation_state_var.set(text)
         self.operation_state_label.configure(
             fg=color, font=('Sans', font_size, 'bold'))
-
-        # The operation-state topic is the fallback completion signal for
-        # RESET. The service response can be delayed or fail to reach the GUI.
-        if self.reset_request_in_flight:
-            if state == 4:
-                self.resetting_state_seen = True
-            elif self.resetting_state_seen and state == 2:
-                self._release_pending_operation_after_reset(state)
-                self._display_reset_result(
-                    True, 'RESETTING -> READY state transition received')
-            elif self.resetting_state_seen and state == 5:
-                self._release_pending_operation_after_reset(state)
-                self._display_reset_result(
-                    False, 'RESETTING -> RESET_FAILED state transition received')
-
         self._update_reset_button_state()
-        self._update_operation_buttons_state()
 
     def _update_reset_button_state(self):
         reset_allowed = self.operation_state in (0, 3, 5)
@@ -330,7 +309,6 @@ class TargetGui(Node):
     def _display_reset_result(self, success, message, service_error=False):
         """Display reset result temporarily without moving the RESET caption."""
         self.reset_request_in_flight = False
-        self.resetting_state_seen = False
         if success:
             status_text = 'COMPLETE'
             status_color = '#55b878'
@@ -350,7 +328,6 @@ class TargetGui(Node):
         self.reset_status_after_id = self.root.after(
             display_duration_ms, self._clear_reset_status)
         self._update_reset_button_state()
-        self._update_operation_buttons_state()
 
     def _send_brake(self):
         """Request brake mode through shoot_belt's existing stop topic."""
@@ -375,31 +352,23 @@ class TargetGui(Node):
                 f'{self.reset_origin_service_name}')
             return
 
-        self.reset_request_id += 1
-        request_id = self.reset_request_id
-        self.resetting_state_seen = False
         self.reset_request_in_flight = True
         self.reset_button.configure(state=tk.DISABLED)
-        self._update_operation_buttons_state()
         self._set_reset_result('RESETTING...', '#e0b45b')
         future = self.reset_origin_client.call_async(Trigger.Request())
-        future.add_done_callback(
-            lambda completed_future, request_id=request_id:
-                self._on_reset_origin_done(completed_future, request_id))
+        future.add_done_callback(self._on_reset_origin_done)
 
-    def _on_reset_origin_done(self, future, request_id):
+    def _on_reset_origin_done(self, future):
         try:
             response = future.result()
             self.event_queue.put((
                 'reset_origin_result',
-                (request_id, bool(response.success), str(response.message))))
+                (bool(response.success), str(response.message))))
         except Exception as exc:
-            self.event_queue.put(('reset_origin_error', (request_id, str(exc))))
+            self.event_queue.put(('reset_origin_error', str(exc)))
 
     def _send_operation(self, operation):
-        # Do not allow setpoint changes while origin initialization is active.
-        if (self.request_in_flight or self.reset_request_in_flight or
-                self.operation_state == 4):
+        if self.request_in_flight:
             return
         if not self.client.service_is_ready():
             self.get_logger().warning(
@@ -408,27 +377,17 @@ class TargetGui(Node):
 
         request = ManualCurrent.Request()
         request.operation = int(operation)
-        self.operation_request_id += 1
-        request_id = self.operation_request_id
-        self.pending_operation_request_id = request_id
         self.request_in_flight = True
-        self._update_operation_buttons_state()
+        self._set_buttons_enabled(False)
 
         future = self.client.call_async(request)
-        future.add_done_callback(
-            lambda completed_future, request_id=request_id:
-                self._on_service_done(completed_future, request_id))
-        # Report a stalled service response, but do not release the lock:
-        # an INCREASE/DECREASE request may still have been applied server-side.
-        self.operation_request_timeout_after_id = self.root.after(
-            5000, self._on_operation_request_timeout, request_id)
+        future.add_done_callback(self._on_service_done)
 
-    def _on_service_done(self, future, request_id):
+    def _on_service_done(self, future):
         try:
-            self.event_queue.put(
-                ('service_result', (request_id, future.result())))
+            self.event_queue.put(('service_result', future.result()))
         except Exception as exc:
-            self.event_queue.put(('service_error', (request_id, str(exc))))
+            self.event_queue.put(('service_error', str(exc)))
 
     def _process_ros_events(self):
         try:
@@ -439,101 +398,38 @@ class TargetGui(Node):
                 elif event == 'operation_state':
                     self._set_operation_state(payload)
                 elif event == 'service_result':
-                    request_id, response = payload
-                    if (self.request_in_flight and
-                            request_id == self.pending_operation_request_id):
-                        self.request_in_flight = False
-                        self.pending_operation_request_id = None
-                        self._cancel_operation_request_timeout()
-                        self._update_operation_buttons_state()
-                        if math.isfinite(response.current_a):
-                            self.current_var.set(f'{response.current_a:.2f} A')
-                        if response.success:
-                            self.get_logger().info(
-                                f'Current setpoint updated: {response.current_a:.2f} A')
-                        else:
-                            self.get_logger().warning(
-                                f'Current setting rejected: {response.message}')
-                    else:
+                    self.request_in_flight = False
+                    self._set_buttons_enabled(True)
+                    if math.isfinite(payload.current_a):
+                        self.current_var.set(f'{payload.current_a:.2f} A')
+                    if payload.success:
                         self.get_logger().info(
-                            f'Ignoring late manual-current response for request {request_id}')
+                            f'Current setpoint updated: {payload.current_a:.2f} A')
+                    else:
+                        self.get_logger().warning(
+                            f'Current setting rejected: {payload.message}')
                 elif event == 'service_error':
-                    request_id, error = payload
-                    if (self.request_in_flight and
-                            request_id == self.pending_operation_request_id):
-                        self.request_in_flight = False
-                        self.pending_operation_request_id = None
-                        self._cancel_operation_request_timeout()
-                        self._update_operation_buttons_state()
-                        self.get_logger().error(
-                            f'Manual-current service call failed: {error}')
-                    else:
-                        self.get_logger().info(
-                            f'Ignoring late manual-current service error for request {request_id}')
+                    self.request_in_flight = False
+                    self._set_buttons_enabled(True)
+                    self.get_logger().error(
+                        f'Manual-current service call failed: {payload}')
                 elif event == 'reset_origin_result':
-                    request_id, success, message = payload
-                    if (request_id == self.reset_request_id and
-                            self.reset_request_in_flight):
-                        self._display_reset_result(success, message)
-                    else:
-                        self.get_logger().info(
-                            f'Ignoring late RESET service response for request {request_id}')
+                    success, message = payload
+                    self._display_reset_result(success, message)
                 elif event == 'reset_origin_error':
-                    request_id, error = payload
-                    if (request_id == self.reset_request_id and
-                            self.reset_request_in_flight):
-                        self._display_reset_result(
-                            False,
-                            f'Origin reset service call failed: {error}',
-                            service_error=True)
-                    else:
-                        self.get_logger().info(
-                            f'Ignoring late RESET service error for request {request_id}')
+                    self._display_reset_result(
+                        False,
+                        f'Origin reset service call failed: {payload}',
+                        service_error=True)
         except queue.Empty:
             pass
 
         self.root.after(50, self._process_ros_events)
 
-    def _update_operation_buttons_state(self):
-        # RESETTING has priority over a manual-service completion event.
-        enabled = (
-            not self.request_in_flight and
-            not self.reset_request_in_flight and
-            self.operation_state != 4
-        )
+    def _set_buttons_enabled(self, enabled):
         state = tk.NORMAL if enabled else tk.DISABLED
         for button in (*self.fixed_buttons, self.up_button, self.down_button):
             button.configure(state=state)
-
-    def _release_pending_operation_after_reset(self, reset_state):
-        """Discard a pre-RESET GUI request after the controller finished RESET."""
-        if not self.request_in_flight:
-            return
-
-        request_id = self.pending_operation_request_id
-        self.get_logger().warning(
-            f'Clearing pending manual-current request {request_id} after '
-            f'RESET reached state {reset_state}; any late response will be ignored')
-        self.request_in_flight = False
-        self.pending_operation_request_id = None
-        self._cancel_operation_request_timeout()
-
-    def _cancel_operation_request_timeout(self):
-        if self.operation_request_timeout_after_id is not None:
-            try:
-                self.root.after_cancel(self.operation_request_timeout_after_id)
-            except tk.TclError:
-                pass
-            self.operation_request_timeout_after_id = None
-
-    def _on_operation_request_timeout(self, request_id):
-        if (self.request_in_flight and
-                request_id == self.pending_operation_request_id):
-            self.operation_request_timeout_after_id = None
-            self.get_logger().error(
-                f'Manual-current service response for request {request_id} '
-                'has not arrived after 5 seconds; operation buttons remain disabled '
-                'until the response arrives or a RESET completes')
 
     def toggle_full_screen(self):
         current = bool(self.root.attributes('-fullscreen'))
