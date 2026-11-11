@@ -57,3 +57,16 @@ GUI の full_screen は config/target_gui.yaml で変更できます。Esc で�
 - トピック /shoot_belt/stop (std_msgs/msg/Empty)：ブレーキ・停止要求
 - 状態トピック /shoot_belt/manual_current_state (std_msgs/msg/Float32, transient-local)：射出電流設定値
 - 設定値の変更時にモーターの制御モード・CAN指令には触れません。シーケンス実行中に変更しても、実行中の射出は開始時に固定した電流値を使い、変更後の設定は次回以降の射出に反映します。
+
+## RELOAD連携
+
+GUIは /reload/ready が true で、かつ /shoot_belt/operation_state が
+READY (2) の場合に限り、/reload/execute (Sequence operation 2) を送信します。
+belt_reloadは射出側の RUNNING (1) -> READY (2) を正常完了として検出したときだけ
+RELOADを許可し、RELOAD Actionの受付時に許可を消費します。RELOADまたは
+原点初期化の後は、次の射出が正常終了するまで再実行できません。
+
+RESETは /shoot_belt/reset_origin と /reload/reset_origin を並行して実行し、
+両方の成功を確認してから完了表示にします。片方だけ成功した場合は失敗表示とし、
+射出側だけ成功してreload側が失敗した場合は、次回RESETでreload側だけを再試行します。
+CANCELは従来どおり /shoot_belt/stop のみを対象とし、reload Actionはキャンセルしません。

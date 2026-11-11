@@ -15,6 +15,11 @@ target_gui:
     # 射出Actionの受付状態を受信するトピック名。
     operation_state_topic: /shoot_belt/operation_state
 
+    # reload action servers and their latched one-shot permission state.
+    reload_execute_action_name: /reload/execute
+    reload_reset_origin_action_name: /reload/reset_origin
+    reload_ready_topic: /reload/ready
+
 
     # true: 全画面で起動、false: ウィンドウ表示で起動。
     full_screen: false

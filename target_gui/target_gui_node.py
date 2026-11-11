@@ -4,13 +4,16 @@ import threading
 import tkinter as tk
 
 import rclpy
+from action_msgs.msg import GoalStatus
+from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile
 
 from shoot_belt.srv import ManualCurrent
+from sequence_interfaces.action import Sequence
 
-from std_msgs.msg import Empty, Float32, UInt8
+from std_msgs.msg import Bool, Empty, Float32, UInt8
 
 from std_srvs.srv import Trigger
 
@@ -29,6 +32,10 @@ class TargetGui(Node):
             'state_topic', '/shoot_belt/manual_current_state')
         self.declare_parameter(
             'operation_state_topic', '/shoot_belt/operation_state')
+        self.declare_parameter('reload_execute_action_name', '/reload/execute')
+        self.declare_parameter(
+            'reload_reset_origin_action_name', '/reload/reset_origin')
+        self.declare_parameter('reload_ready_topic', '/reload/ready')
         self.declare_parameter('full_screen', True)
 
         self.service_name = str(self.get_parameter('service_name').value)
@@ -38,6 +45,12 @@ class TargetGui(Node):
         self.state_topic = str(self.get_parameter('state_topic').value)
         self.operation_state_topic = str(
             self.get_parameter('operation_state_topic').value)
+        self.reload_execute_action_name = str(
+            self.get_parameter('reload_execute_action_name').value)
+        self.reload_reset_origin_action_name = str(
+            self.get_parameter('reload_reset_origin_action_name').value)
+        self.reload_ready_topic = str(
+            self.get_parameter('reload_ready_topic').value)
         self.full_screen = bool(self.get_parameter('full_screen').value)
 
         self.event_queue = queue.Queue()
@@ -48,11 +61,25 @@ class TargetGui(Node):
         self.reset_status_after_id = None
         self.operation_request_timeout_after_id = None
         self.operation_state = None
+        self.reload_ready = False
+        self.reload_request_in_flight = False
+        self.reload_request_id = 0
+        self.reset_shoot_done = False
+        self.reset_shoot_success = False
+        self.reset_shoot_message = ''
+        self.reset_reload_done = False
+        self.reset_reload_success = False
+        self.reset_reload_message = ''
+        self.reload_reset_retry_needed = False
 
         self.client = self.create_client(ManualCurrent, self.service_name)
         self.stop_publisher = self.create_publisher(Empty, self.stop_topic, 10)
         self.reset_origin_client = self.create_client(
             Trigger, self.reset_origin_service_name)
+        self.reload_execute_client = ActionClient(
+            self, Sequence, self.reload_execute_action_name)
+        self.reload_reset_origin_client = ActionClient(
+            self, Sequence, self.reload_reset_origin_action_name)
         state_qos = QoSProfile(
             depth=1,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -61,6 +88,8 @@ class TargetGui(Node):
             Float32, self.state_topic, self._on_current_state, state_qos)
         self.operation_state_sub = self.create_subscription(
             UInt8, self.operation_state_topic, self._on_operation_state, state_qos)
+        self.reload_ready_sub = self.create_subscription(
+            Bool, self.reload_ready_topic, self._on_reload_ready, state_qos)
 
         self.root = tk.Tk()
         self.root.title('Target GUI - 射出電流設定')
@@ -82,7 +111,7 @@ class TargetGui(Node):
         self.fixed_frame.grid(
             row=0, column=0, rowspan=2, sticky='nsew',
             padx=(10, 5), pady=10)
-        for row in range(4):
+        for row in range(5):
             self.fixed_frame.grid_rowconfigure(row, weight=1, uniform='fixed_bucket')
         self.fixed_frame.grid_columnconfigure(0, weight=1)
         self.fixed_buttons = []
@@ -104,8 +133,22 @@ class TargetGui(Node):
             )
             button.grid(
                 row=row, column=0, sticky='nsew',
-                pady=(0, 5) if row < 3 else (0, 0))
+                pady=(0, 5) if row < 3 else (0, 5))
             self.fixed_buttons.append(button)
+
+        self.reload_button = tk.Button(
+            self.fixed_frame,
+            text='RELOAD',
+            command=self._send_reload,
+            font=('Sans', 22, 'bold'),
+            bg='#75549a', fg='white',
+            activebackground='#9069b8', activeforeground='white',
+            disabledforeground='#9aa0a6',
+            relief=tk.FLAT, bd=0, takefocus=False,
+        )
+        self.reload_button.grid(
+            row=4, column=0, sticky='nsew', pady=(0, 0))
+        self.reload_button.configure(state=tk.DISABLED)
 
         # The right half keeps the existing brake/reset and up/down controls
         # above the current and operation-state indicators.
@@ -248,6 +291,7 @@ class TargetGui(Node):
         self.operation_state_label.grid(
             row=0, column=1, sticky='nsew', padx=(6, 12), pady=8)
 
+        self._update_reload_button_state()
         self.root.update_idletasks()
         if self.full_screen:
             self.root.attributes('-fullscreen', True)
@@ -258,7 +302,10 @@ class TargetGui(Node):
             f'stop_topic={self.stop_topic}, '
             f'reset_origin_service={self.reset_origin_service_name}, '
             f'state_topic={self.state_topic}, '
-            f'operation_state_topic={self.operation_state_topic}')
+            f'operation_state_topic={self.operation_state_topic}, '
+            f'reload_execute_action={self.reload_execute_action_name}, '
+            f'reload_reset_action={self.reload_reset_origin_action_name}, '
+            f'reload_ready_topic={self.reload_ready_topic}')
 
     def _on_current_state(self, message):
         if math.isfinite(message.data):
@@ -267,6 +314,9 @@ class TargetGui(Node):
     def _on_operation_state(self, message):
         if message.data in (0, 1, 2, 3, 4, 5):
             self.event_queue.put(('operation_state', int(message.data)))
+
+    def _on_reload_ready(self, message):
+        self.event_queue.put(('reload_ready', bool(message.data)))
 
     def _set_operation_state(self, state):
         state_display = {
@@ -285,26 +335,44 @@ class TargetGui(Node):
         self.operation_state_var.set(text)
         self.operation_state_label.configure(
             fg=color, font=('Sans', font_size, 'bold'))
+        if state != 2:
+            self.reload_ready = False
 
-        # The operation-state topic is the fallback completion signal for
-        # RESET. The service response can be delayed or fail to reach the GUI.
+        # Only the shoot_belt reset transition is a fallback for its own
+        # service result. RESET is complete only after both mechanisms finish.
         if self.reset_request_in_flight:
             if state == 4:
                 self.resetting_state_seen = True
-            elif state == 2:
-                self._display_reset_result(
-                    True, 'RESETTING -> READY state transition received')
+            elif self.resetting_state_seen and state == 2:
+                self._mark_shoot_reset_result(
+                    self.reset_request_id, True,
+                    'RESETTING -> READY state transition received')
             elif self.resetting_state_seen and state == 5:
-                self._display_reset_result(
-                    False, 'RESETTING -> RESET_FAILED state transition received')
+                self._mark_shoot_reset_result(
+                    self.reset_request_id, False,
+                    'RESETTING -> RESET_FAILED state transition received')
 
         self._update_reset_button_state()
         self._update_operation_buttons_state()
+        self._update_reload_button_state()
 
     def _update_reset_button_state(self):
-        reset_allowed = self.operation_state in (0, 3, 5)
-        enabled = reset_allowed and not self.reset_request_in_flight
+        retry_reload_only = (
+            self.reload_reset_retry_needed and self.operation_state == 2)
+        reset_allowed = self.operation_state in (0, 3, 5) or retry_reload_only
+        enabled = (reset_allowed and not self.reset_request_in_flight and
+                   not self.reload_request_in_flight)
         self.reset_button.configure(
+            state=tk.NORMAL if enabled else tk.DISABLED)
+
+    def _update_reload_button_state(self):
+        enabled = (
+            self.reload_ready and
+            self.operation_state == 2 and
+            not self.reload_request_in_flight and
+            not self.reset_request_in_flight
+        )
+        self.reload_button.configure(
             state=tk.NORMAL if enabled else tk.DISABLED)
 
     def _set_reset_result(self, text, color='#d9dce0'):
@@ -356,41 +424,140 @@ class TargetGui(Node):
             f'Brake/stop request published to {self.stop_topic}')
 
     def _send_reset_origin(self):
-        """Request origin initialization without blocking the Tk event loop."""
-        if self.reset_request_in_flight or self.operation_state not in (0, 3, 5):
-            return
-        self._cancel_reset_status_timer()
-        if not self.reset_origin_client.service_is_ready():
-            self._display_reset_result(
-                False,
-                'Origin reset service is unavailable: '
-                f'{self.reset_origin_service_name}',
-                service_error=True)
-            self.get_logger().warning(
-                'Origin reset service is unavailable: '
-                f'{self.reset_origin_service_name}')
+        """Initialize both origins, retrying only reload if shoot reset already succeeded."""
+        retry_reload_only = (
+            self.reload_reset_retry_needed and self.operation_state == 2)
+        if (self.reset_request_in_flight or self.reload_request_in_flight or
+                (self.operation_state not in (0, 3, 5) and not retry_reload_only)):
             return
 
+        self._cancel_reset_status_timer()
         self.reset_request_id += 1
         request_id = self.reset_request_id
         self.resetting_state_seen = False
         self.reset_request_in_flight = True
+        self.reset_shoot_done = retry_reload_only
+        self.reset_shoot_success = retry_reload_only
+        self.reset_shoot_message = (
+            'shoot_belt origin already initialized; retrying reload only'
+            if retry_reload_only else '')
+        self.reset_reload_done = False
+        self.reset_reload_success = False
+        self.reset_reload_message = ''
+        self.reload_reset_retry_needed = False
+        self.reload_ready = False
         self.reset_button.configure(state=tk.DISABLED)
         self._update_operation_buttons_state()
-        self._set_reset_result('RESETTING...', '#e0b45b')
-        future = self.reset_origin_client.call_async(Trigger.Request())
-        future.add_done_callback(
-            lambda completed_future, request_id=request_id:
-                self._on_reset_origin_done(completed_future, request_id))
+        self._update_reload_button_state()
+        self._set_reset_result(
+            'RESETTING RELOAD...' if retry_reload_only else 'RESETTING BOTH...',
+            '#e0b45b')
+
+        # Existing shoot_belt initialization. Retry only the failed reload
+        # half when the shooting origin already succeeded and remains READY.
+        if retry_reload_only:
+            pass
+        elif self.reset_origin_client.service_is_ready():
+            try:
+                future = self.reset_origin_client.call_async(Trigger.Request())
+                future.add_done_callback(
+                    lambda completed_future, request_id=request_id:
+                        self._on_reset_origin_done(completed_future, request_id))
+            except Exception as exc:
+                self._mark_shoot_reset_result(
+                    request_id, False, f'shoot_belt service call failed: {exc}')
+        else:
+            self._mark_shoot_reset_result(
+                request_id, False,
+                f'shoot_belt reset service unavailable: {self.reset_origin_service_name}')
+
+        # Reload origin initialization is an independent Sequence Action.
+        if self.reload_reset_origin_client.server_is_ready():
+            goal = Sequence.Goal()
+            goal.operation = Sequence.Goal.OPERATION_HOME
+            try:
+                future = self.reload_reset_origin_client.send_goal_async(goal)
+                future.add_done_callback(
+                    lambda completed_future, request_id=request_id:
+                        self._on_reload_reset_goal_response(completed_future, request_id))
+            except Exception as exc:
+                self._mark_reload_reset_result(
+                    request_id, False, f'reload reset Action call failed: {exc}')
+        else:
+            self._mark_reload_reset_result(
+                request_id, False,
+                f'reload reset Action server unavailable: {self.reload_reset_origin_action_name}')
 
     def _on_reset_origin_done(self, future, request_id):
         try:
             response = future.result()
             self.event_queue.put((
-                'reset_origin_result',
+                'shoot_reset_result',
                 (request_id, bool(response.success), str(response.message))))
         except Exception as exc:
-            self.event_queue.put(('reset_origin_error', (request_id, str(exc))))
+            self.event_queue.put(('shoot_reset_error', (request_id, str(exc))))
+
+    def _on_reload_reset_goal_response(self, future, request_id):
+        try:
+            goal_handle = future.result()
+            if not goal_handle.accepted:
+                self.event_queue.put((
+                    'reload_reset_result',
+                    (request_id, False, 'reload reset Action goal was rejected')))
+                return
+            result_future = goal_handle.get_result_async()
+            result_future.add_done_callback(
+                lambda completed_future, request_id=request_id:
+                    self._on_reload_reset_result(completed_future, request_id))
+        except Exception as exc:
+            self.event_queue.put((
+                'reload_reset_result',
+                (request_id, False, f'reload reset Action failed: {exc}')))
+
+    def _on_reload_reset_result(self, future, request_id):
+        try:
+            wrapped = future.result()
+            result = wrapped.result
+            success = (wrapped.status == GoalStatus.STATUS_SUCCEEDED and
+                       bool(result.success))
+            message = str(result.reason)
+            self.event_queue.put((
+                'reload_reset_result', (request_id, success, message)))
+        except Exception as exc:
+            self.event_queue.put((
+                'reload_reset_result',
+                (request_id, False, f'reload reset result error: {exc}')))
+
+    def _mark_shoot_reset_result(self, request_id, success, message):
+        if request_id != self.reset_request_id or not self.reset_request_in_flight:
+            return
+        if self.reset_shoot_done:
+            return
+        self.reset_shoot_done = True
+        self.reset_shoot_success = bool(success)
+        self.reset_shoot_message = str(message)
+        self._try_finish_combined_reset()
+
+    def _mark_reload_reset_result(self, request_id, success, message):
+        if request_id != self.reset_request_id or not self.reset_request_in_flight:
+            return
+        if self.reset_reload_done:
+            return
+        self.reset_reload_done = True
+        self.reset_reload_success = bool(success)
+        self.reset_reload_message = str(message)
+        self._try_finish_combined_reset()
+
+    def _try_finish_combined_reset(self):
+        if not (self.reset_shoot_done and self.reset_reload_done):
+            return
+        success = self.reset_shoot_success and self.reset_reload_success
+        self.reload_reset_retry_needed = (
+            self.reset_shoot_success and not self.reset_reload_success)
+        message = (
+            f'shoot_belt: {self.reset_shoot_message}; '
+            f'reload: {self.reset_reload_message}')
+        self._display_reset_result(success, message)
 
     def _send_operation(self, operation):
         # Do not allow setpoint changes while origin initialization is active.
@@ -420,6 +587,58 @@ class TargetGui(Node):
         except Exception as exc:
             self.event_queue.put(('service_error', str(exc)))
 
+    def _send_reload(self):
+        if (not self.reload_ready or self.operation_state != 2 or
+                self.reload_request_in_flight or self.reset_request_in_flight):
+            return
+        if not self.reload_execute_client.server_is_ready():
+            self.get_logger().warning(
+                f'RELOAD Action server is unavailable: {self.reload_execute_action_name}')
+            return
+
+        self.reload_request_id += 1
+        request_id = self.reload_request_id
+        goal = Sequence.Goal()
+        goal.operation = Sequence.Goal.OPERATION_PROCEED
+        self.reload_request_in_flight = True
+        self._update_reload_button_state()
+        self._update_reset_button_state()
+        try:
+            future = self.reload_execute_client.send_goal_async(goal)
+            future.add_done_callback(
+                lambda completed_future, request_id=request_id:
+                    self._on_reload_execute_goal_response(completed_future, request_id))
+        except Exception as exc:
+            self.event_queue.put(('reload_execute_error', (request_id, str(exc))))
+
+    def _on_reload_execute_goal_response(self, future, request_id):
+        try:
+            goal_handle = future.result()
+            if not goal_handle.accepted:
+                self.event_queue.put((
+                    'reload_execute_rejected',
+                    (request_id, 'RELOAD Action goal was rejected by belt_reload')))
+                return
+            self.event_queue.put(('reload_execute_accepted', request_id))
+            result_future = goal_handle.get_result_async()
+            result_future.add_done_callback(
+                lambda completed_future, request_id=request_id:
+                    self._on_reload_execute_result(completed_future, request_id))
+        except Exception as exc:
+            self.event_queue.put(('reload_execute_error', (request_id, str(exc))))
+
+    def _on_reload_execute_result(self, future, request_id):
+        try:
+            wrapped = future.result()
+            result = wrapped.result
+            success = (wrapped.status == GoalStatus.STATUS_SUCCEEDED and
+                       bool(result.success))
+            self.event_queue.put((
+                'reload_execute_result',
+                (request_id, success, str(result.reason))))
+        except Exception as exc:
+            self.event_queue.put(('reload_execute_error', (request_id, str(exc))))
+
     def _process_ros_events(self):
         try:
             while True:
@@ -446,25 +665,52 @@ class TargetGui(Node):
                     self._update_operation_buttons_state()
                     self.get_logger().error(
                         f'Manual-current service call failed: {payload}')
-                elif event == 'reset_origin_result':
+                elif event == 'shoot_reset_result':
                     request_id, success, message = payload
-                    if (request_id == self.reset_request_id and
-                            self.reset_request_in_flight):
-                        self._display_reset_result(success, message)
-                    else:
-                        self.get_logger().info(
-                            f'Ignoring late RESET service response for request {request_id}')
-                elif event == 'reset_origin_error':
+                    self._mark_shoot_reset_result(request_id, success, message)
+                elif event == 'shoot_reset_error':
                     request_id, error = payload
-                    if (request_id == self.reset_request_id and
-                            self.reset_request_in_flight):
-                        self._display_reset_result(
-                            False,
-                            f'Origin reset service call failed: {error}',
-                            service_error=True)
-                    else:
-                        self.get_logger().info(
-                            f'Ignoring late RESET service error for request {request_id}')
+                    self._mark_shoot_reset_result(
+                        request_id, False, f'shoot_belt reset service error: {error}')
+                elif event == 'reload_reset_result':
+                    request_id, success, message = payload
+                    self._mark_reload_reset_result(request_id, success, message)
+                elif event == 'reload_ready':
+                    self.reload_ready = bool(payload)
+                    self._update_reload_button_state()
+                elif event == 'reload_execute_accepted':
+                    request_id = payload
+                    if request_id == self.reload_request_id:
+                        self.reload_ready = False
+                        self._update_reload_button_state()
+                elif event == 'reload_execute_rejected':
+                    request_id, message = payload
+                    if request_id == self.reload_request_id:
+                        self.reload_request_in_flight = False
+                        # A rejected Goal was not accepted; its one-shot
+                        # permission remains available for a retry.
+                        self.get_logger().warning(message)
+                        self._update_reload_button_state()
+                        self._update_reset_button_state()
+                elif event == 'reload_execute_result':
+                    request_id, success, message = payload
+                    if request_id == self.reload_request_id:
+                        self.reload_request_in_flight = False
+                        self.reload_ready = False
+                        if success:
+                            self.get_logger().info(f'RELOAD completed: {message}')
+                        else:
+                            self.get_logger().error(f'RELOAD failed: {message}')
+                        self._update_reload_button_state()
+                        self._update_reset_button_state()
+                elif event == 'reload_execute_error':
+                    request_id, error = payload
+                    if request_id == self.reload_request_id:
+                        self.reload_request_in_flight = False
+                        self.reload_ready = False
+                        self.get_logger().error(f'RELOAD Action error: {error}')
+                        self._update_reload_button_state()
+                        self._update_reset_button_state()
         except queue.Empty:
             pass
 
@@ -480,6 +726,7 @@ class TargetGui(Node):
         state = tk.NORMAL if enabled else tk.DISABLED
         for button in (*self.fixed_buttons, self.up_button, self.down_button):
             button.configure(state=state)
+        self._update_reload_button_state()
 
     def _cancel_operation_request_timeout(self):
         if self.operation_request_timeout_after_id is not None:
