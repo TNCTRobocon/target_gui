@@ -102,8 +102,8 @@ class TargetGui(Node):
 
         # Split the screen into left and right halves. The fixed buttons
         # span the full height of the left half.
-        self.root.grid_rowconfigure(0, weight=8)
-        self.root.grid_rowconfigure(1, weight=2)
+        self.root.grid_rowconfigure(0, weight=7)
+        self.root.grid_rowconfigure(1, weight=3)
         self.root.grid_columnconfigure(0, weight=1, uniform='screen')
         self.root.grid_columnconfigure(1, weight=1, uniform='screen')
 
@@ -111,8 +111,10 @@ class TargetGui(Node):
         self.fixed_frame.grid(
             row=0, column=0, rowspan=2, sticky='nsew',
             padx=(10, 5), pady=10)
-        for row in range(5):
-            self.fixed_frame.grid_rowconfigure(row, weight=1, uniform='fixed_bucket')
+        fixed_row_weights = (7, 7, 7, 7, 12)
+        for row, weight in enumerate(fixed_row_weights):
+            self.fixed_frame.grid_rowconfigure(
+                row, weight=weight, uniform='fixed_bucket')
         self.fixed_frame.grid_columnconfigure(0, weight=1)
         self.fixed_buttons = []
         fixed_bucket_options = (
@@ -133,7 +135,7 @@ class TargetGui(Node):
             )
             button.grid(
                 row=row, column=0, sticky='nsew',
-                pady=(0, 5) if row < 3 else (0, 5))
+                pady=(0, 5) if row < 3 else (0, 1))
             self.fixed_buttons.append(button)
 
         self.reload_button = tk.Button(
