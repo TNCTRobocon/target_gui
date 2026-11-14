@@ -157,20 +157,17 @@ class TargetGui(Node):
         self.main_frame = tk.Frame(self.root, bg='#202124')
         self.main_frame.grid(
             row=0, column=1, sticky='nsew', padx=(5, 10), pady=(10, 5))
-        self.main_frame.grid_rowconfigure(0, weight=1)
+        # A shared 3:1 row split keeps the lower edge of the UP/DOWN
+        # group exactly aligned with the upper edge of the RESET frame.
+        self.main_frame.grid_rowconfigure(0, weight=3, uniform='control_area')
+        self.main_frame.grid_rowconfigure(1, weight=1, uniform='control_area')
         self.main_frame.grid_columnconfigure(0, weight=5, uniform='main')
         self.main_frame.grid_columnconfigure(1, weight=10, uniform='main')
 
-        # Brake and reset occupy the same total height as before.
-        self.middle_frame = tk.Frame(self.main_frame, bg='#202124')
-        self.middle_frame.grid(
-            row=0, column=0, sticky='nsew', padx=6, pady=0)
-        self.middle_frame.grid_rowconfigure(0, weight=3, uniform='middle')
-        self.middle_frame.grid_rowconfigure(1, weight=1, uniform='middle')
-        self.middle_frame.grid_columnconfigure(0, weight=1)
-
+        # CANCEL occupies the upper 3/4 of the shared control area.
+        # RESET occupies the lower 1/4; this is the same 3:1 ratio as before.
         self.brake_button = tk.Button(
-            self.middle_frame,
+            self.main_frame,
             text='CANCEL',
             command=self._send_brake,
             font=('Sans', 26, 'bold'),
@@ -179,13 +176,13 @@ class TargetGui(Node):
             relief=tk.FLAT, bd=0, takefocus=False,
         )
         self.brake_button.grid(
-            row=0, column=0, sticky='nsew', pady=(0, 5))
+            row=0, column=0, sticky='nsew', padx=6, pady=(0, 5))
 
         # Draw one persistent outer frame around both the RESET button and
         # its lower result-display area. The highlight border reserves its own
         # space, so the child widgets cannot cover the bottom edge.
         self.reset_container = tk.Frame(
-            self.middle_frame,
+            self.main_frame,
             bg='#5f6368',
             bd=0,
             relief=tk.FLAT,
@@ -194,7 +191,7 @@ class TargetGui(Node):
             highlightcolor='#9aa0a6',
         )
         self.reset_container.grid(
-            row=1, column=0, sticky='nsew', pady=(0, 0))
+            row=1, column=0, sticky='nsew', padx=6, pady=(0, 0))
 
         self.reset_button = tk.Button(
             self.reset_container,
